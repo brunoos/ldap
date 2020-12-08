@@ -21,6 +21,58 @@ end
 
 --------------------------------------------------------------------------------
 
+local response_codes = {
+  [0] = "success",
+  [1] = "operationsError",
+  [2] = "protocolError",
+  [3] = "timeLimitExceeded",
+  [4] = "sizeLimitExceeded",
+  [5] = "compareFalse",
+  [6] = "compareTrue",
+  [7] = "authMethodNotSupported",
+  [8] = "strongerAuthRequired",
+  -- 9 reserved --
+  [10] = "referral",
+  [11] = "adminLimitExceeded",
+  [12] = "unavailableCriticalExtension",
+  [13] = "confidentialityRequired",
+  [14] = "saslBindInProgress",
+  -- 15 ??? --
+  [16] = "noSuchAttribute",
+  [17] = "undefinedAttributeType",
+  [18] = "inappropriateMatching",
+  [19] = "constraintViolation",
+  [20] = "attributeOrValueExists",
+  [21] = "invalidAttributeSyntax",
+  -- 22-31 unused --
+  [32] = "noSuchObject",
+  [33] = "aliasProblem",
+  [34] = "invalidDNSyntax",
+  -- 35 reserved for undefined isLeaf --
+  [36] = "aliasDereferencingProblem",
+  -- 37-47 unused --
+  [48] = "inappropriateAuthentication",
+  [49] = "invalidCredentials",
+  [50] = "insufficientAccessRights",
+  [51] = "busy",
+  [52] = "unavailable",
+  [53] = "unwillingToPerform",
+  [54] = "loopDetect",
+  -- 55-63 unused --
+  [64] = "namingViolation",
+  [65] = "objectClassViolation",
+  [66] = "notAllowedOnNonLeaf",
+  [67] = "notAllowedOnRDN",
+  [68] = "entryAlreadyExists",
+  [69] = "objectClassModsProhibited",
+  -- 70 reserved for CLDAP --
+  [71] = "affectsMultipleDSAs",
+  -- 72-79 unused --
+  [80] = "other",
+}
+
+--------------------------------------------------------------------------------
+
 local meta = {}
 
 function meta:peek()
@@ -118,21 +170,14 @@ end
 --------------------------------------------------------------------------------
 
 local function packet_recv(s)
-  local function recv(s)
-    local code = next_byte(s)
-    if code ~= 0x30 then
-      error("invalid protocol")
-    end
-    local size = next_size(s)
-    local payload, err = s:receive(size)
-    if err then
-      error(err)
-    end
-    return newbuffer(payload)
+  local code = next_byte(s)
+  assert(code == 0x30, "invalid code")
+  local size = next_size(s)
+  local payload, err = s:receive(size)
+  if err then
+    error(err)
   end
-
-  local err, msg = pcall(recv, s)
-  return err, msg
+  return newbuffer(payload)
 end
 
 --------------------------------------------------------------------------------
@@ -148,22 +193,19 @@ end
 
 --------------------------------------------------------------------------------
 
-local function bind_response(sock)
-  local succ, buf = packet_recv(sock)
-  if not succ then
-    return false, buf
-  end
+local function bind_response(sock, sid)
+  local buf = packet_recv(sock)
 
   -- Message ID
-  local id   = buf:integer()
-
-  -- Bind response: 61 + size
+  local id = buf:integer()
+  assert(id == sid, "invalid message ID")
+  -- Bind response: 0x61
   local code = buf:byte()
+  assert(code == 0x61, "invalid code")
+  -- Message size
   local size = buf:size()
-
   -- Enumerate
   local enum = buf:enum()
-
   -- Extra
   local dn  = buf:string()
   local msg = buf:string()
@@ -172,12 +214,16 @@ local function bind_response(sock)
     return true
   end
 
-  return false, dn, msg
+  return false, (response_codes[enum] or "unknown")
 end
 
 --------------------------------------------------------------------------------
 
 local function bind(self, name, pwd)
+  if type(name) ~= "string" or type(pwd) ~= "string" then
+    return nil, "invalid parameters"
+  end
+
   local msg
   local id = self:next_id()
   msg = string.pack(">BBs4", 0x80, 0x84, pwd)
@@ -193,7 +239,11 @@ local function bind(self, name, pwd)
 
   self._sock:send(msg)
 
-  return bind_response(self._sock)
+  local succ, resp, msg = pcall(bind_response, self._sock, id)
+  if not succ then
+    return false, resp
+  end
+  return resp, msg
 end
 
 --------------------------------------------------------------------------------
